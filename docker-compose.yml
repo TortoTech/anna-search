@@ -1,0 +1,71 @@
+name: anna-search
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: annas
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: annas
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    shm_size: 256mb
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=6GB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - work_mem=64MB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - jit=off
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U annas -d annas"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://annas:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/annas
+      API_PORT: "3000"
+      ANNAS_DOMAINS: ${ANNAS_DOMAINS:-annas-archive.gl,annas-archive.gd,annas-archive.pk}
+    ports:
+      - "127.0.0.1:${API_PORT:-3000}:3000"
+    volumes:
+      - dumps:/data/dumps
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile.downloader
+    profiles: ["download"]
+    environment:
+      BT_STOP_TIMEOUT: ${BT_STOP_TIMEOUT:-900}
+    ports:
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - dumps:/data/dumps
+
+volumes:
+  pgdata:
+  dumps:
