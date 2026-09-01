@@ -35,7 +35,6 @@ describe('normalizeRecord', () => {
     expect(row!.isbn).toBe('9780441172719');
     expect(row!.pages).toBe('412');
     expect(row!.source).toBe('zlib3');
-    expect(row!.aacid).toBe('aacid__zlib3_records__test');
     expect(row!.dateAdded).toBe('2021-05-30 21:11:45');
   });
 

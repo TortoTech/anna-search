@@ -20,7 +20,6 @@ function row(overrides: Partial<DocRow>): DocRow {
     doi: null,
     isbn: null,
     description: null,
-    aacid: null,
     dateAdded: null,
     ...overrides,
   };
@@ -38,7 +37,7 @@ describe('toCopyLine', () => {
   it('escapes COPY special chars and encodes nulls', () => {
     const line = toCopyLine(row({ title: 'a\\b\tc\nd', year: 1999 }));
     const fields = line.split('\t');
-    expect(fields.length).toBe(18);
+    expect(fields.length).toBe(17);
     expect(fields[3]).toBe('a\\\\b c d');
     expect(fields[7]).toBe('1999');
     expect(fields[4]).toBe('\\N');

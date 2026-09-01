@@ -50,6 +50,9 @@ const SELECT_FIELDS = [
   'date_added',
 ].join(', ');
 
+// Must stay in sync with the GIN index definition in db/schema.sql / src/indexes.ts
+export const FTS_EXPRESSION = `(setweight(to_tsvector('english_unaccent', coalesce(title, '')), 'A') || setweight(to_tsvector('english_unaccent', coalesce(author, '')), 'B') || setweight(to_tsvector('english_unaccent', coalesce(publisher, '')), 'C'))`;
+
 export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => `\\${m}`);
 }
@@ -109,14 +112,14 @@ function appendFilters(f: SearchFilters, values: unknown[], where: string[]): nu
 /** PostgreSQL full-text search over the weighted tsvector. */
 export function buildFtsQuery(f: SearchFilters, q: string): Built {
   const values: unknown[] = [q];
-  const where = [`search_vector @@ websearch_to_tsquery('english_unaccent', $1)`];
+  const where = [`${FTS_EXPRESSION} @@ websearch_to_tsquery('english_unaccent', $1)`];
   let idx = appendFilters(f, values, where);
   values.push(f.limit ?? 20);
   return {
     text: `SELECT ${SELECT_FIELDS}
 FROM documents
 WHERE ${where.join(' AND ')}
-ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english_unaccent', $1)) DESC, year DESC NULLS LAST
+ORDER BY ts_rank_cd(${FTS_EXPRESSION}, websearch_to_tsquery('english_unaccent', $1)) DESC, year DESC NULLS LAST
 LIMIT $${idx}`,
     values,
   };

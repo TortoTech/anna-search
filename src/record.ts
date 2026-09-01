@@ -14,9 +14,8 @@ export interface DocRow {
   edition: string | null;
   doi: string | null;
   isbn: string | null;
-  description: string | null;
-  aacid: string | null;
-  dateAdded: string | null;
+    description: string | null;
+    dateAdded: string | null;
 }
 
 export const COPY_COLUMNS = [
@@ -36,7 +35,6 @@ export const COPY_COLUMNS = [
   'doi',
   'isbn',
   'description',
-  'aacid',
   'date_added',
 ] as const;
 
@@ -129,8 +127,6 @@ export function normalizeRecord(raw: unknown, source = 'zlib3'): DocRow | null {
   const md5 = md5Raw.trim().toLowerCase();
   if (!isValidMd5(md5)) return null;
 
-  const aacid = typeof raw['aacid'] === 'string' ? raw['aacid'] : null;
-
   let sourceId: string | null = null;
   for (const key of ['zlibrary_id', 'libgen_id', 'id', 'primary_id', 'doi']) {
     const v = meta[key];
@@ -173,7 +169,6 @@ export function normalizeRecord(raw: unknown, source = 'zlib3'): DocRow | null {
     doi: truncate(getStr(meta, ['doi']) ?? '', 200),
     isbn: extractIsbn(meta),
     description: truncate(getStr(meta, ['description']) ?? '', 2000),
-    aacid,
     dateAdded: getStr(meta, ['date_added']),
   };
 }

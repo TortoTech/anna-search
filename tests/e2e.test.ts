@@ -4,10 +4,12 @@ import path from 'node:path';
 import 'dotenv/config';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const databaseUrl = process.env.E2E_DATABASE_URL ?? process.env.DATABASE_URL;
+// Deliberately requires an explicit E2E_DATABASE_URL (never falls back to
+// DATABASE_URL) so a production database can never be truncated by accident.
+const databaseUrl = process.env.E2E_DATABASE_URL;
 const enabled = Boolean(databaseUrl) && process.env.RUN_E2E === '1';
 
-process.env.DATABASE_URL = databaseUrl ?? '';
+process.env.DATABASE_URL = databaseUrl ?? 'postgresql://annas:annas@localhost:5432/annas_e2e_disabled';
 process.env.ANNAS_DOMAINS = '';
 
 const { pool } = await import('../src/db.js');

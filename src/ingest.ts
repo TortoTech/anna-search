@@ -8,6 +8,7 @@ import { from as copyFrom } from 'pg-copy-streams';
 import { globSync } from 'tinyglobby';
 import type pg from 'pg';
 import { pool } from './db.js';
+import { createIndexes, dropIndexes } from './indexes.js';
 import { COPY_COLUMNS, normalizeRecord, type DocRow } from './record.js';
 import { zstdJsonlLines } from './zjsonl.js';
 
@@ -53,7 +54,6 @@ export function toCopyLine(row: DocRow): string {
     field(row.doi),
     field(row.isbn),
     field(row.description),
-    field(row.aacid),
     field(row.dateAdded),
   ].join('\t');
 }
@@ -161,6 +161,9 @@ export interface IngestOptions {
   limit?: number;
   batchSize?: number;
   source?: string;
+  dropIndexes?: boolean;
+  createIndexes?: boolean;
+  vacuumFull?: boolean;
 }
 
 export interface IngestStats {
@@ -202,6 +205,13 @@ export async function ingestFiles(options: IngestOptions): Promise<IngestStats> 
   let batch: DocRow[] = [];
 
   const client = await pool.connect();
+  // ingest is idempotent (ON CONFLICT merge), so a crash can lose at most the
+  // uncommitted batch — trade durability for speed during bulk load
+  await client.query('SET synchronous_commit = off');
+  if (options.dropIndexes) {
+    console.log('dropping secondary indexes for bulk load (PK kept)...');
+    await dropIndexes(client);
+  }
   const logProgress = (): void => {
     const secs = Math.max((Date.now() - startedAt) / 1000, 0.001);
     const rate = Math.round(imported / secs);
@@ -259,6 +269,20 @@ export async function ingestFiles(options: IngestOptions): Promise<IngestStats> 
       await flushBatch(client, batch);
       batches += 1;
     }
+
+    if (options.vacuumFull) {
+      // rewrite the heap to reclaim dead tuples from ON CONFLICT merges;
+      // cheapest here, while secondary indexes are still dropped
+      console.log('running VACUUM (FULL, ANALYZE) documents...');
+      const t0 = Date.now();
+      await client.query('VACUUM (FULL, ANALYZE) documents');
+      console.log(`  vacuum full done (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    }
+
+    if (options.createIndexes) {
+      console.log('rebuilding secondary indexes...');
+      await createIndexes(client);
+    }
   } finally {
     client.release();
   }
@@ -281,16 +305,35 @@ if (isMain) {
     .option('-l, --limit <n>', 'stop after importing N rows (sample mode)', (v) => Number.parseInt(v, 10))
     .option('-b, --batch <n>', 'rows per COPY batch', (v) => Number.parseInt(v, 10), 10_000)
     .option('-s, --source <name>', 'source collection name', 'zlib3')
+    .option('--drop-indexes', 'drop secondary indexes before ingest (bulk-load speedup)')
+    .option('--vacuum-full', 'VACUUM (FULL, ANALYZE) after ingest, before index rebuild')
+    .option('--create-indexes', '(re)create secondary indexes after ingest finishes')
     .parse(process.argv);
 
-  const opts = program.opts<{ input: string[]; limit?: number; batch: number; source: string }>();
+  const opts = program.opts<{
+    input: string[];
+    limit?: number;
+    batch: number;
+    source: string;
+    dropIndexes?: boolean;
+    vacuumFull?: boolean;
+    createIndexes?: boolean;
+  }>();
 
   process.on('SIGINT', () => {
     console.error('\ninterrupted');
     process.exit(130);
   });
 
-  ingestFiles({ input: opts.input, limit: opts.limit, batchSize: opts.batch, source: opts.source })
+  ingestFiles({
+    input: opts.input,
+    limit: opts.limit,
+    batchSize: opts.batch,
+    source: opts.source,
+    dropIndexes: opts.dropIndexes,
+    vacuumFull: opts.vacuumFull,
+    createIndexes: opts.createIndexes,
+  })
     .then(() => process.exit(0))
     .catch((err) => {
       console.error(err);

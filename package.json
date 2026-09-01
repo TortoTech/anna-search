@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "ingest": "tsx src/ingest.ts",
+    "indexes": "tsx src/indexes.ts",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:e2e": "vitest run tests/e2e.test.ts"

@@ -25,17 +25,15 @@ CREATE TABLE IF NOT EXISTS documents (
     doi           TEXT,
     isbn          TEXT,
     description   TEXT,
-    aacid         TEXT,
     date_added    TEXT,
-    completeness  SMALLINT NOT NULL DEFAULT 0,
-    search_vector TSVECTOR GENERATED ALWAYS AS (
-        setweight(to_tsvector('english_unaccent', coalesce(title, '')), 'A') ||
-        setweight(to_tsvector('english_unaccent', coalesce(author, '')), 'B') ||
-        setweight(to_tsvector('english_unaccent', coalesce(publisher, '')), 'C')
-    ) STORED
+    completeness  SMALLINT NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_documents_search ON documents USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS idx_documents_search ON documents USING GIN (
+    (setweight(to_tsvector('english_unaccent', coalesce(title, '')), 'A') ||
+     setweight(to_tsvector('english_unaccent', coalesce(author, '')), 'B') ||
+     setweight(to_tsvector('english_unaccent', coalesce(publisher, '')), 'C'))
+);
 CREATE INDEX IF NOT EXISTS idx_documents_title_trgm ON documents USING GIN (title gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_documents_author_trgm ON documents USING GIN (author gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_documents_language ON documents (language) WHERE language IS NOT NULL;

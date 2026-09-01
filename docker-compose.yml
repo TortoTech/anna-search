@@ -2,7 +2,7 @@ name: anna-search
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     restart: unless-stopped
     environment:
       POSTGRES_USER: annas

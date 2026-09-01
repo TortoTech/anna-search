@@ -45,15 +45,22 @@ metadata dump (.jsonl.seekable.zst, 21.4GB torrent)
 - **导入**：每 1 万行 COPY 进临时表 → `INSERT ... ON CONFLICT (md5) DO UPDATE`
   （保留字段更完整的记录）；批次内先按 md5 去重（否则报
   "cannot affect row a second time"）。全程幂等，中断后重跑即可续传补齐
+- **批量导入提速 + 瘦身**：`--drop-indexes --vacuum-full --create-indexes` —— 先删二级
+  索引（保留主键）再导入，结束后 `VACUUM (FULL, ANALYZE)` 回收 `ON CONFLICT` 合并产生
+  的死元组，再一次性并行建索引。增量维护 GIN（尤其 trigram）代价远高于一次性批量构建；
+  配合会话级 `synchronous_commit=off`（幂等重跑兜底），导入提速数倍、体积减半以上
 - **搜索**：`pg_trgm` + `unaccent`（搜 "Zizek" 命中 "Žižek"）；全文 0 结果自动降级
   trigram ILIKE（中文等语言的子串匹配，如搜「刘慈」命中「刘慈欣」）
 - **详情页**：结果直接附 `url`，域名可配置（默认 `annas-archive.gl`）
+- **schema v2**：不存 `aacid`（血缘由 `source` + `source_id` 承担，省 ~5GB）；
+  FTS 不存 tsvector 存储列，改为表达式 GIN 索引（省 ~14GB，查询/索引共用同一表达式，
+  定义集中在 `src/search.ts` 的 `FTS_EXPRESSION`）。存量 v1 库用 `db/migrate-v2.sql` 迁移
 
 ## 项目结构
 
 ```
 anna-search/
-├── docker-compose.yml          # postgres:16-alpine + api + downloader(aria2c) profile
+├── docker-compose.yml          # postgres:16 + api + downloader(aria2c) profile
 ├── Dockerfile                  # api 镜像（node:25-alpine，源码编译 zstd-napi）
 ├── Dockerfile.downloader       # alpine + aria2，run-once 下载容器
 ├── db/schema.sql               # pg_trgm/unaccent + documents 表 + GIN/trgm 索引
@@ -61,7 +68,8 @@ anna-search/
 ├── src/
 │   ├── zjsonl.ts               # 拉取式 zstd JSONL 读取（内存恒定）
 │   ├── record.ts               # dump 行规范化（md5 校验/年份钳制/ISBN 清洗…）
-│   ├── ingest.ts               # COPY 批量导入 CLI（--limit 抽样 / --batch）
+│   ├── ingest.ts               # COPY 批量导入 CLI（--limit 抽样 / --batch / --drop-indexes）
+│   ├── indexes.ts              # 二级索引 drop/create（批量导入提速，可单独运行）
 │   ├── search.ts               # FTS 查询构造 + trigram 降级
 │   ├── server.ts               # Express HTTP API
 │   ├── config.ts / db.ts
@@ -80,10 +88,15 @@ docker compose up -d postgres
 docker compose --profile download run --rm downloader
 #    查看进度: docker compose logs -f --tail 5 downloader
 
-# 2. 导入（先抽样验证，再全量；全量约 1.5–2 小时，中断重跑即可）
+# 2. 导入（先抽样验证，再全量）
 docker compose run --rm api node dist/ingest.js -i '/data/dumps/*zlib3_records*.zst' -l 100000
-docker compose run -d --name ingest-full api node dist/ingest.js -i '/data/dumps/*zlib3_records*.zst'
+docker compose run -d --name ingest-full api node dist/ingest.js -i '/data/dumps/*zlib3_records*.zst' --drop-indexes --vacuum-full --create-indexes
 #    查看进度: docker logs -f ingest-full
+#    说明: 先删二级索引再导入，结束后 VACUUM FULL 回收重复行合并产生的死元组，
+#    最后一次性并行重建索引。比带索引增量导入快数倍、体积小一半以上。
+#    注意: VACUUM FULL 期间需要约 1 倍表大小的额外临时磁盘空间。
+#    若中途中断: 索引处于已删除状态，重跑本命令或单独执行
+#    `docker compose run --rm api node dist/indexes.js create` 即可恢复。
 
 # 3. 启动搜索 API
 docker compose up -d api
@@ -143,7 +156,8 @@ npm run dev          # tsx watch 启动 API
 npm run ingest -- -i 'path/*.zst' -l 1000   # 本机导入
 npm run typecheck    # tsc --noEmit（含 tests）
 npm test             # vitest（单元）
-RUN_E2E=1 npm test   # 含 e2e（需要 PG，会 TRUNCATE documents！）
+RUN_E2E=1 E2E_DATABASE_URL=postgresql://... npm test   # e2e 必须显式指定 E2E_DATABASE_URL
+#   （不会回退到 DATABASE_URL，防止误清生产库；会 TRUNCATE 目标库的 documents！）
 ```
 
 调试导入：`-e AA_TRACE_FILE=/tmp/trace.log` 可在容器内输出逐批内存跟踪
@@ -156,7 +170,8 @@ RUN_E2E=1 npm test   # 含 e2e（需要 PG，会 TRUNCATE documents！）
 | 下载 | 21.4 GB |
 | PostgreSQL 落盘 | 20–30 GB |
 | 导入内存 | ~300 MB（拉取式读取，与数据量无关） |
-| 导入耗时 | 1.5–2 小时（~4.5k 行/秒，受 GIN 索引维护限制） |
+| 导入耗时 | 带索引增量 ~1.5–2 小时（~4.5k 行/秒）；`--drop-indexes --vacuum-full --create-indexes` 模式总体约快 2–3 倍 |
+| 额外临时空间 | VACUUM FULL 期间约 1 倍表大小（~20GB），完成后释放 |
 
 ## 已知问题 / 踩坑记录
 
@@ -166,10 +181,6 @@ RUN_E2E=1 npm test   # 含 e2e（需要 PG，会 TRUNCATE documents！）
   函数，`--batch 10000` 变成 `parseInt('10000', 10000)`（radix 非法）→ NaN →
   `batch.length >= NaN` 恒为 false，批次永不 flush。现已用
   `(v) => Number.parseInt(v, 10)` + 运行时校验规避
-- **异常关机**：导入进行中直接断电可能导致 Docker Desktop 的 containerd 元数据库
-  （`meta.db`）损坏（SIGBUS panic）。修复：WSL 内挂载数据盘，将
-  `data/desktop-containerd/daemon/io.containerd.metadata.v1.bolt/meta.db` 改名，
-  重启后自动重建（镜像需重建/重拉，卷数据不受影响）
 
 ## 免责声明
 
